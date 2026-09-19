@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ubudesk-server"
+version = "0.1.0"
+description = "UbuDesk server: turn an Android device into an extra monitor for an Ubuntu PC"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "zeroconf>=0.147",
+    "cryptography>=44",
+    "av>=14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+    "pytest-timeout>=2.3",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+# X11 / mirror-fallback input injection (needs libc headers to build)
+uinput = ["evdev>=1.7"]
+
+[project.scripts]
+ubudesk = "ubudesk_server.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ubudesk_server*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 120
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["SIM108", "SIM117"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = false
+ignore_missing_imports = true
+check_untyped_defs = true
