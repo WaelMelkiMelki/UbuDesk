@@ -1,0 +1,74 @@
+name: server-ci
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - "protocol/**"
+      - "tools/**"
+      - ".github/workflows/server-ci.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "protocol/**"
+      - "tools/**"
+
+jobs:
+  test:
+    # 22.04 = Python 3.10 + GStreamer 1.20 (oldest supported combination)
+    # 24.04 = Python 3.12 + GStreamer 1.24
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages (PyAV wheels are self-contained; ffmpeg only for debugging)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-dev
+
+      - name: Set up venv
+        working-directory: server
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Ruff lint
+        working-directory: server
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+
+      - name: Mypy
+        working-directory: server
+        run: .venv/bin/mypy ubudesk_server
+
+      - name: Verify golden vectors are up to date
+        working-directory: server
+        run: |
+          .venv/bin/python ../protocol/vectors/generate.py
+          git diff --exit-code ../protocol/vectors/
+
+      - name: Pytest (unit + headless integration)
+        working-directory: server
+        run: .venv/bin/python -m pytest tests -v
+
+      - name: End-to-end CLI smoke test (serve + test_client over loopback)
+        run: |
+          export UBUDESK_STATE_DIR=/tmp/ubudesk-ci
+          server/.venv/bin/ubudesk serve --source test --no-tls --bind 127.0.0.1 --pair > /tmp/serve.log 2>&1 &
+          SERVER_PID=$!
+          sleep 3
+          PIN=$(grep -oP 'pairing PIN: \K[0-9]{6}' /tmp/serve.log | head -1)
+          echo "PIN=$PIN"
+          server/.venv/bin/python tools/test_client.py \
+            --host 127.0.0.1 --no-tls --pin "$PIN" \
+            --seconds 5 --request-idr --touch --dump /tmp/dump.h264
+          kill $SERVER_PID
+          test -s /tmp/dump.h264
+          cat /tmp/serve.log

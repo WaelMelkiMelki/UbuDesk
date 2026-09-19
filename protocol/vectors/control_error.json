@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "error",
+    "code": "capture_failed",
+    "message": "portal denied"
+  }
+}

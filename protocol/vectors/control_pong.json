@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "pong",
+    "seq": 1,
+    "ts": 123456789
+  }
+}

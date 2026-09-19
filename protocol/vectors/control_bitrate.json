@@ -1,0 +1,7 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "bitrate",
+    "kbps": 8000
+  }
+}

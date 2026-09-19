@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "auth",
+    "method": "token",
+    "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+}

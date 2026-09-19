@@ -1,0 +1,19 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "hello",
+    "proto": 1,
+    "client_id": "3f2a1b7c-9d4e-4f60-8a2b-5c6d7e8f9a0b",
+    "name": "Pixel Tablet",
+    "app_version": "0.1.0",
+    "screen": {
+      "w": 2560,
+      "h": 1600,
+      "dpi": 320,
+      "refresh": 60
+    },
+    "codecs": [
+      "h264"
+    ]
+  }
+}

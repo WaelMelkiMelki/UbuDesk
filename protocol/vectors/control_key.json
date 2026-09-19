@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "key",
+    "code": 30,
+    "down": true
+  }
+}

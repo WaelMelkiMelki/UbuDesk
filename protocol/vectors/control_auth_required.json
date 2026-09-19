@@ -1,0 +1,12 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "auth_required",
+    "server_id": "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+    "server_name": "my-pc",
+    "methods": [
+      "token",
+      "pin"
+    ]
+  }
+}

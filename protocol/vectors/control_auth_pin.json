@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "auth",
+    "method": "pin",
+    "pin": "123456"
+  }
+}

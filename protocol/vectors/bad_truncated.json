@@ -1,0 +1,4 @@
+{
+  "kind": "invalid",
+  "reason": "stream ends mid-frame; treat as disconnect"
+}
