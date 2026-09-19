@@ -1,0 +1,4 @@
+# udev rule for the uinput fallback input backend (X11 sessions).
+# Install: sudo cp 99-ubudesk.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+# Also add your user to the input group: sudo usermod -aG input $USER  (re-login)
+KERNEL=="uinput", MODE="0660", GROUP="input", TAG+="uaccess"
