@@ -1,0 +1,7 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "auth_ok",
+    "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "started",
+    "width": 1920,
+    "height": 1200,
+    "fps": 60,
+    "codec": "h264",
+    "encoder": "x264enc"
+  }
+}

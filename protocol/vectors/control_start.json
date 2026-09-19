@@ -1,0 +1,12 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "start",
+    "width": 1920,
+    "height": 1200,
+    "fps": 60,
+    "bitrate_kbps": 15000,
+    "mode": "extend",
+    "touch_mode": "touch"
+  }
+}

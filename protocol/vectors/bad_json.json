@@ -1,0 +1,4 @@
+{
+  "kind": "invalid",
+  "reason": "control payload is not valid JSON"
+}

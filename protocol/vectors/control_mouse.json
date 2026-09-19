@@ -1,0 +1,10 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "mouse",
+    "a": "down",
+    "b": "left",
+    "x": 0.4,
+    "y": 0.7
+  }
+}

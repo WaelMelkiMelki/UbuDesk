@@ -1,0 +1,8 @@
+{
+  "kind": "control",
+  "message": {
+    "t": "auth_fail",
+    "reason": "bad_pin",
+    "retry_after_s": 60
+  }
+}
