@@ -25,9 +25,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--bind", default=None, help="bind address (default 0.0.0.0)")
     serve.add_argument(
         "--source",
-        choices=["portal", "test"],
+        choices=["auto", "portal", "x11", "test"],
         default=None,
-        help="video source: portal = real screen, test = moving test pattern",
+        help="video source: auto = pick by session type (default), portal = Wayland, "
+        "x11 = ximagesrc/xrandr, test = moving test pattern",
     )
     serve.add_argument(
         "--mode",

@@ -4,7 +4,8 @@ Turn an Android phone or tablet into an **extra (or mirrored) monitor for an
 Ubuntu PC** — over Wi-Fi or a USB cable — with touch and keyboard input sent
 back to the desktop.
 
-- **Server:** Python 3.11+, GStreamer, xdg-desktop-portal (Wayland/GNOME first-class)
+- **Server:** Python 3.10+, GStreamer 1.20+, Wayland (portal) **and** X11
+  (ximagesrc + xrandr) capture backends, auto-selected per session
 - **Client:** Kotlin / Jetpack Compose, MediaCodec low-latency H.264
 - **Security:** PIN pairing, TLS with trust-on-first-use certificate pinning,
   hashed tokens. LAN/USB only — no cloud, no telemetry.
@@ -15,7 +16,7 @@ back to the desktop.
 
 ## Quick start
 
-### 1. Ubuntu server (Ubuntu 24.04+, GNOME on Wayland recommended)
+### 1. Ubuntu server (Ubuntu 22.04 / 24.04 / 24.10 / 25.x; 20.04 best-effort)
 
 ```bash
 git clone https://github.com/WaelMelkiMelki/UbuDesk.git
@@ -54,27 +55,36 @@ Tap **USB** on the app's connect screen.
 
 ### 4. Modes
 
-- **Extend** (default): a new virtual monitor appears in *Settings →
-  Displays*; drag windows onto it. Requires GNOME on Wayland with a portal
-  that supports VIRTUAL sources (`ubudesk doctor` tells you).
-- **Mirror**: streams an existing monitor. Works on any Wayland desktop
-  (you pick the monitor in the GNOME dialog).
+- **Extend** (default): a new virtual monitor appears; drag windows onto it.
+  - *Wayland*: needs a portal that supports VIRTUAL sources (GNOME does).
+  - *X11*: created with the xrandr ladder — a `VIRTUAL` output, a forced
+    disconnected connector (this is also how EVDI virtual displays appear),
+    or a `--setmonitor` region as last resort.
+- **Mirror**: streams an existing monitor. Works on **every** supported
+  combination (portal MONITOR on Wayland, `ximagesrc` on X11).
+
+The server never falls back silently: the mode actually in use is logged and
+reported to the client, and `ubudesk doctor` prints a per-machine verdict
+(mirror yes/no, extend yes/no, and why) before you even connect.
 
 ## How it works
 
-Capture uses the **xdg-desktop-portal** ScreenCast+RemoteDesktop APIs: the
-portal creates a virtual monitor (or shares a real one) as a PipeWire stream,
-GStreamer encodes it to H.264 (VA-API/NVENC when available, x264 otherwise),
+On **Wayland**, capture uses the **xdg-desktop-portal**
+ScreenCast+RemoteDesktop APIs: the portal creates a virtual monitor (or
+shares a real one) as a PipeWire stream and input is injected through the
+same portal session. On **X11**, capture uses `ximagesrc` (with the xrandr
+ladder creating the extend region) and input is injected via
+`uinput`/python-evdev. Either way GStreamer encodes to H.264
+(`vah264enc` → `vaapih264enc` → `nvh264enc` → `x264enc`, picked at runtime),
 and a single TLS TCP connection carries video one way and JSON input events
-the other. Touch/mouse/keyboard are injected through the same portal session,
-so coordinates always land on the streamed monitor. Details in
+the other. Details in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), wire format in
 [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## CLI
 
 ```
-ubudesk serve  [--port 7777] [--bind 0.0.0.0] [--source portal|test]
+ubudesk serve  [--port 7777] [--bind 0.0.0.0] [--source auto|portal|x11|test]
                [--mode extend|mirror] [--encoder auto|x264|va|nvenc]
                [--no-tls] [--pair] [--log-level debug|info|warning|error]
 ubudesk doctor [--json]     # environment diagnostics with fix commands
@@ -118,14 +128,32 @@ git add .github/workflows && git commit -m "ci: enable workflows" && git push
 
 ## Support matrix (honest)
 
-| Environment | Extend | Mirror | Input |
-|---|---|---|---|
-| Ubuntu 24.04+ GNOME Wayland | ✅ designed for (portal VIRTUAL) | ✅ | ✅ portal |
-| Other Wayland desktops | portal-dependent | ✅ usually | portal-dependent |
-| X11 sessions | ❌ planned (M8) | ⚠️ via portal if present | ⚠️ uinput fallback |
+What *should* work per Ubuntu version and session type — and what has
+actually been **verified on real hardware** so far. Run `ubudesk doctor` for
+the authoritative verdict on *your* machine.
 
-“Verified on real hardware” per feature: see
-[docs/MANUAL_TEST.md](docs/MANUAL_TEST.md).
+| Ubuntu | Session | Mirror | Extend | Input | Verified on hardware |
+|---|---|---|---|---|---|
+| 24.04 / 24.10 / 25.x | GNOME Wayland | ✅ portal | ✅ portal VIRTUAL | portal | ❌ not yet |
+| 24.04 / 24.10 / 25.x | X11 (any DE) | ✅ ximagesrc | ⚠️ xrandr ladder¹ | uinput | ❌ not yet |
+| 22.04 | GNOME Wayland | ✅ portal | ⚠️ portal-dependent² | portal | ❌ not yet |
+| 22.04 | X11 (any DE) | ✅ ximagesrc | ⚠️ xrandr ladder¹ | uinput | ❌ not yet |
+| 20.04 (best-effort) | X11 | ✅ ximagesrc | ⚠️ xrandr ladder¹ | uinput | ❌ not yet |
+| Other Wayland DEs (KDE…) | Wayland | ✅ usually | portal-dependent² | portal-dependent | ❌ not yet |
+
+¹ X11 extend depends on the GPU driver: works out of the box when a
+`VIRTUAL` output or a spare disconnected connector exists (or with
+`evdi-dkms` installed); otherwise falls back to a `--setmonitor` region,
+which some compositors do not render. `ubudesk doctor` tells you which rung
+of the ladder applies. Mirror always works.
+² The portal must advertise VIRTUAL source types; GNOME ≥ 42 on Wayland
+does, most others don't (yet). Mirror always works.
+
+The headless CI (protocol, auth, TLS, encode pipeline with test source) runs
+on **ubuntu-22.04 and ubuntu-24.04** — that part is verified continuously.
+Per-feature hardware status is tracked in
+[docs/MANUAL_TEST.md](docs/MANUAL_TEST.md); the table above will be updated
+as real machines confirm each row.
 
 ## License
 

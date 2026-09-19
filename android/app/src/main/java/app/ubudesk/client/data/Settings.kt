@@ -25,6 +25,7 @@ class AppStorage(private val context: Context) {
         val SHOW_STATS = booleanPreferencesKey("show_stats")
         val COMPAT_DECODE = booleanPreferencesKey("compat_decode")
         val MODE = stringPreferencesKey("mode")
+        val LOCK_LANDSCAPE = booleanPreferencesKey("lock_landscape")
     }
 
     suspend fun clientId(): String {
@@ -37,13 +38,14 @@ class AppStorage(private val context: Context) {
 
     val settings: Flow<StreamSettings> = context.dataStore.data.map { p ->
         StreamSettings(
-            resolutionPreset = p[Keys.RESOLUTION] ?: "1920x1200",
+            resolutionPreset = p[Keys.RESOLUTION] ?: "auto",
             fps = p[Keys.FPS] ?: 60,
             bitrateKbps = p[Keys.BITRATE] ?: 15000,
             touchMode = p[Keys.TOUCH_MODE] ?: true,
             showStats = p[Keys.SHOW_STATS] ?: false,
             compatibilityDecode = p[Keys.COMPAT_DECODE] ?: false,
             mode = p[Keys.MODE] ?: "extend",
+            lockLandscape = p[Keys.LOCK_LANDSCAPE] ?: true,
         )
     }
 
@@ -56,6 +58,7 @@ class AppStorage(private val context: Context) {
             p[Keys.SHOW_STATS] = s.showStats
             p[Keys.COMPAT_DECODE] = s.compatibilityDecode
             p[Keys.MODE] = s.mode
+            p[Keys.LOCK_LANDSCAPE] = s.lockLandscape
         }
     }
 

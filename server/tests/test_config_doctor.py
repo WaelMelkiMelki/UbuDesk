@@ -21,7 +21,7 @@ def test_config_roundtrip():
 def test_config_defaults():
     cfg = Config.load()
     assert cfg.port == 7777
-    assert cfg.source == "portal"
+    assert cfg.source == "auto"
     assert cfg.mode == "extend"
     assert cfg.tls is True
     assert cfg.server_name
@@ -34,13 +34,20 @@ def test_doctor_runs_headless():
     assert "session" in names
     # in a headless container the session check fails - that's correct behavior
     text = format_report(report)
-    assert "virtual monitor:" in text
+    assert "support matrix for this machine:" in text
+    assert "mirror:" in text and "extend:" in text
+    # headless: both must honestly report NO
+    assert report.mirror == "NO" and report.extend == "NO"
 
 
 def test_doctor_json():
     report = run_doctor()
     out = json.loads(format_report(report, as_json=True))
     assert "checks" in out and "verdict" in out and "ok" in out
+    matrix = out["matrix"]
+    assert matrix["mirror"] in ("YES", "NO", "UNKNOWN")
+    assert matrix["extend"] in ("YES", "NO", "UNKNOWN")
+    assert "session" in matrix and "os" in matrix
     for check in out["checks"]:
         assert check["status"] in ("PASS", "WARN", "FAIL")
 
@@ -48,3 +55,19 @@ def test_doctor_json():
 def test_state_dir_permissions():
     d = state_dir()
     assert (d.stat().st_mode & 0o777) == 0o700
+
+
+def test_doctor_x11_matrix(monkeypatch):
+    """Simulated X11 session: session check passes, ximagesrc/encoder absence
+    is reported honestly in the matrix."""
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("DISPLAY", ":0")
+    report = run_doctor()
+    assert report.session_type == "x11"
+    session = next(c for c in report.checks if c.name == "session")
+    assert session.status == "PASS"
+    # headless CI has no GStreamer -> mirror NO with a reason; never UNKNOWN
+    assert report.mirror in ("YES", "NO")
+    assert report.mirror_why
+    assert report.extend in ("YES", "NO")
+    assert report.extend_why

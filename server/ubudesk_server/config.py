@@ -11,7 +11,12 @@ State lives in ``~/.config/ubudesk/`` (override with ``UBUDESK_STATE_DIR`` for t
 from __future__ import annotations
 
 import os
-import tomllib
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - Ubuntu 22.04 / Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,7 +38,7 @@ def state_dir() -> Path:
 class Config:
     port: int = 7777
     bind: str = "0.0.0.0"
-    source: str = "portal"  # portal | test
+    source: str = "auto"  # auto | portal | x11 | test
     mode: str = "extend"  # extend | mirror
     encoder: str = "auto"  # auto | x264 | va | nvenc
     tls: bool = True

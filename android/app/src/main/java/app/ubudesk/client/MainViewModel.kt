@@ -178,7 +178,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 pendingServer = updated
                 viewModelScope.launch { storage.upsertServer(updated) }
             }
-            val (w, h) = s.resolve(deviceW, deviceH)
+            val (w, h) = s.resolve(deviceW, deviceH, deviceDpi)
             _state.value = UiState.Connecting(server, "starting stream…")
             client?.send(Protocol.start(w, h, s.fps, s.bitrateKbps, s.mode, if (s.touchMode) "touch" else "mouse"))
         }

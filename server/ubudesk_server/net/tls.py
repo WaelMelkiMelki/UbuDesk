@@ -26,7 +26,7 @@ def ensure_cert(directory: Path, common_name: str = "ubudesk") -> tuple[Path, Pa
 
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)  # noqa: UP017 - py3.10 compat
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)

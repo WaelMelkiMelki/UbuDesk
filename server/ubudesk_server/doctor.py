@@ -20,12 +20,14 @@ SOURCE_VIRTUAL = 4
 
 GST_ELEMENTS = [
     "pipewiresrc",
+    "ximagesrc",
     "videoconvert",
     "videoscale",
     "videorate",
     "h264parse",
     "x264enc",
     "vah264enc",
+    "vaapih264enc",
     "nvh264enc",
 ]
 
@@ -45,6 +47,13 @@ class Report:
     checks: list[CheckResult] = field(default_factory=list)
     virtual_monitor: str = "UNKNOWN"
     verdict: str = ""
+    # support matrix for THIS machine
+    session_type: str = ""
+    mirror: str = "UNKNOWN"  # YES | NO | UNKNOWN
+    mirror_why: str = ""
+    extend: str = "UNKNOWN"
+    extend_why: str = ""
+    input_path: str = "UNKNOWN"  # portal | uinput | view-only | UNKNOWN
 
     def add(self, name: str, status: str, detail: str, fix: str = "") -> None:
         self.checks.append(CheckResult(name, status, detail, fix))
@@ -61,6 +70,7 @@ def run_doctor() -> Report:
     _check_pipewire(r)
     _check_portal(r)
     _check_gstreamer(r)
+    _check_x11(r)
     _check_uinput(r)
     _check_adb(r)
     _check_port(r)
@@ -99,21 +109,23 @@ def _check_os(r: Report) -> None:
 
 def _check_session(r: Report) -> None:
     session = os.environ.get("XDG_SESSION_TYPE", "")
+    if not session and os.environ.get("DISPLAY"):
+        session = "x11"  # some setups leave XDG_SESSION_TYPE unset
+    r.session_type = session or "none"
     if session == "wayland":
-        r.add("session", "PASS", "XDG_SESSION_TYPE=wayland (primary supported path)")
+        r.add("session", "PASS", "XDG_SESSION_TYPE=wayland (portal capture path)")
     elif session == "x11":
         r.add(
             "session",
-            "WARN",
-            "XDG_SESSION_TYPE=x11: extend mode uses the X11 fallback (best effort)",
-            "log into an 'Ubuntu (Wayland)' session for the primary path",
+            "PASS",
+            "X11 session: capture via ximagesrc, extend via the xrandr ladder, input via uinput",
         )
     else:
         r.add(
             "session",
             "FAIL",
             f"XDG_SESSION_TYPE={session or '(unset)'}: no graphical session detected",
-            "run inside a logged-in GNOME desktop session",
+            "run inside a logged-in desktop session",
         )
 
 
@@ -250,15 +262,17 @@ def _check_gstreamer(r: Report) -> None:
     found_encoders = []
     for name in GST_ELEMENTS:
         present = Gst.ElementFactory.find(name) is not None
-        if name in ("x264enc", "vah264enc", "nvh264enc") and present:
+        if name in ("x264enc", "vah264enc", "vaapih264enc", "nvh264enc") and present:
             found_encoders.append(name)
         if name in REQUIRED_ELEMENTS and not present:
             missing_required.append(name)
         status = "PASS" if present else ("FAIL" if name in REQUIRED_ELEMENTS else "WARN")
         fixes = {
             "pipewiresrc": "sudo apt install gstreamer1.0-pipewire",
+            "ximagesrc": "sudo apt install gstreamer1.0-plugins-good (needed for X11 capture)",
             "x264enc": "sudo apt install gstreamer1.0-plugins-ugly",
             "vah264enc": "sudo apt install gstreamer1.0-plugins-bad (optional, VA-API hw encode)",
+            "vaapih264enc": "sudo apt install gstreamer1.0-vaapi (optional, VA-API on GSt 1.20)",
             "nvh264enc": "sudo apt install gstreamer1.0-plugins-bad (optional, NVENC hw encode)",
             "h264parse": "sudo apt install gstreamer1.0-plugins-bad",
         }
@@ -279,23 +293,85 @@ def _check_gstreamer(r: Report) -> None:
         )
 
 
+def _check_x11(r: Report) -> None:
+    """X11 extend-ladder diagnostics: xrandr, candidate outputs, evdi."""
+    if r.session_type != "x11":
+        return
+    if not shutil.which("xrandr"):
+        r.extend, r.extend_why = "NO", "xrandr not found (required for X11 extend mode)"
+        r.add("xrandr", "FAIL", r.extend_why, "sudo apt install x11-xserver-utils")
+        return
+    try:
+        proc = subprocess.run(["xrandr", "--query"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        r.extend, r.extend_why = "NO", f"xrandr --query failed: {exc}"
+        r.add("xrandr", "WARN", r.extend_why)
+        return
+    if proc.returncode != 0:
+        r.extend, r.extend_why = "NO", f"xrandr --query exited {proc.returncode}"
+        r.add("xrandr", "WARN", r.extend_why)
+        return
+
+    from .capture.x11 import parse_xrandr_query, pick_extend_output
+
+    screen = parse_xrandr_query(proc.stdout)
+    r.add(
+        "xrandr",
+        "PASS",
+        f"{len(screen.outputs)} outputs, {sum(1 for o in screen.outputs if o.connected)} connected",
+    )
+    candidate = pick_extend_output(screen)
+    evdi = os.path.isdir("/sys/module/evdi") or os.path.exists(
+        "/lib/modules/" + platform.release() + "/updates/dkms/evdi.ko"
+    )
+    if candidate is not None:
+        kind = (
+            "VIRTUAL output"
+            if candidate.name.upper().startswith("VIRTUAL")
+            else ("disconnected connector")
+        )
+        r.extend = "YES"
+        r.extend_why = f"xrandr ladder: {kind} '{candidate.name}' can host the virtual screen"
+        r.add("x11_extend", "PASS", r.extend_why)
+    elif evdi:
+        r.extend = "YES"
+        r.extend_why = "evdi kernel module present: EVDI virtual display available"
+        r.add("x11_extend", "PASS", r.extend_why)
+    else:
+        r.extend = "NO"
+        r.extend_why = (
+            "no VIRTUAL output, no disconnected connector, no evdi module: "
+            "extend falls back to a --setmonitor region or mirror"
+        )
+        r.add(
+            "x11_extend",
+            "WARN",
+            r.extend_why,
+            "sudo apt install evdi-dkms  # or enable a VIRTUAL output for your GPU driver",
+        )
+
+
 def _check_uinput(r: Report) -> None:
+    # On X11 uinput IS the input path; on Wayland it is only the fallback.
+    on_x11 = r.session_type == "x11"
+    miss_status = "FAIL" if on_x11 else "WARN"
+    role = "primary X11 input path" if on_x11 else "Wayland fallback input"
     path = "/dev/uinput"
     if not os.path.exists(path):
         r.add(
             "uinput",
-            "WARN",
-            "/dev/uinput does not exist (only needed for X11 fallback input)",
-            "sudo modprobe uinput",
+            miss_status,
+            f"/dev/uinput does not exist ({role})",
+            "sudo modprobe uinput  # and add 'uinput' to /etc/modules-load.d/",
         )
         return
     if os.access(path, os.W_OK):
-        r.add("uinput", "PASS", "/dev/uinput writable (X11 fallback input available)")
+        r.add("uinput", "PASS", f"/dev/uinput writable ({role} available)")
     else:
         r.add(
             "uinput",
-            "WARN",
-            "/dev/uinput not writable (only needed for X11 fallback input)",
+            miss_status,
+            f"/dev/uinput not writable ({role}; stream would be view-only)",
             "sudo usermod -aG input $USER && install the udev rule "
             "(server/packaging/99-ubudesk.rules), then re-login",
         )
@@ -338,16 +414,79 @@ def _check_port(r: Report) -> None:
         )
 
 
+def _status_of(r: Report, name: str) -> str | None:
+    for c in r.checks:
+        if c.name == name:
+            return c.status
+    return None
+
+
 def _verdict(r: Report) -> None:
-    if r.virtual_monitor == "SUPPORTED":
-        r.verdict = "virtual monitor: SUPPORTED (extend mode should work)"
-    elif r.virtual_monitor == "NOT SUPPORTED":
-        r.verdict = (
-            "virtual monitor: NOT SUPPORTED by the portal "
-            "(fallback: mirror mode; see docs/TROUBLESHOOTING.md for the X11/EVDI paths)"
-        )
+    """Fill in the per-machine support matrix and one-line verdict."""
+    os_release = _read_os_release()
+    encoder_ok = _status_of(r, "encoder") == "PASS"
+
+    if r.session_type == "wayland":
+        portal_ok = _status_of(r, "portal") == "PASS"
+        if portal_ok and encoder_ok:
+            r.mirror, r.mirror_why = "YES", "portal ScreenCast (MONITOR) + H.264 encoder present"
+        elif not portal_ok:
+            r.mirror, r.mirror_why = "NO", "ScreenCast portal unreachable"
+        else:
+            r.mirror, r.mirror_why = "NO", "no H.264 encoder available"
+        if r.virtual_monitor == "SUPPORTED" and r.mirror == "YES":
+            r.extend, r.extend_why = "YES", "portal advertises VIRTUAL source type"
+        elif r.virtual_monitor == "NOT SUPPORTED":
+            r.extend, r.extend_why = (
+                "NO",
+                "portal does not advertise VIRTUAL source type on this compositor; "
+                "mirror mode still works",
+            )
+        else:
+            r.extend, r.extend_why = "UNKNOWN", r.mirror_why
+        if _status_of(r, "remote_desktop") == "PASS":
+            r.input_path = "portal"
+        elif _status_of(r, "uinput") == "PASS":
+            r.input_path = "uinput"
+        else:
+            r.input_path = "view-only"
+    elif r.session_type == "x11":
+        ximagesrc_ok = _status_of(r, "gst:ximagesrc") == "PASS"
+        if ximagesrc_ok and encoder_ok:
+            r.mirror, r.mirror_why = "YES", "ximagesrc + H.264 encoder present"
+        elif not ximagesrc_ok:
+            r.mirror, r.mirror_why = "NO", "gstreamer ximagesrc element missing"
+        else:
+            r.mirror, r.mirror_why = "NO", "no H.264 encoder available"
+        # extend/extend_why already set by _check_x11 (xrandr ladder)
+        if r.extend == "YES" and r.mirror == "NO":
+            r.extend, r.extend_why = "NO", r.mirror_why
+        r.input_path = "uinput" if _status_of(r, "uinput") == "PASS" else "view-only"
     else:
-        r.verdict = "virtual monitor: UNKNOWN (portal not reachable from this environment)"
+        r.mirror, r.mirror_why = "NO", "no graphical session detected"
+        r.extend, r.extend_why = "NO", "no graphical session detected"
+        r.input_path = "UNKNOWN"
+
+    lines = [
+        "support matrix for this machine:",
+        f"  OS:      {os_release}",
+        f"  session: {r.session_type}",
+        f"  mirror:  {r.mirror} ({r.mirror_why})",
+        f"  extend:  {r.extend} ({r.extend_why})",
+        f"  input:   {r.input_path}",
+    ]
+    r.verdict = "\n".join(lines)
+
+
+def _read_os_release() -> str:
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return platform.platform()
 
 
 def format_report(r: Report, as_json: bool = False) -> str:
@@ -356,6 +495,15 @@ def format_report(r: Report, as_json: bool = False) -> str:
             {
                 "checks": [asdict(c) for c in r.checks],
                 "virtual_monitor": r.virtual_monitor,
+                "matrix": {
+                    "os": _read_os_release(),
+                    "session": r.session_type,
+                    "mirror": r.mirror,
+                    "mirror_why": r.mirror_why,
+                    "extend": r.extend,
+                    "extend_why": r.extend_why,
+                    "input": r.input_path,
+                },
                 "verdict": r.verdict,
                 "ok": not r.has_fail,
             },

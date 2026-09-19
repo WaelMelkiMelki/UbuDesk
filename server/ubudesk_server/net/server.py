@@ -44,14 +44,35 @@ class UbuDeskServer:
     # ------------------------------------------------------------- factories
 
     def _default_factory(self, settings: StreamSettings) -> tuple[VideoSource, InputBackend]:
-        """Build source+input according to config (test vs portal)."""
-        if self.config.source == "test":
+        """Build source+input according to config (test / portal / x11 / auto)."""
+        source_kind = self.config.source
+        if source_kind == "auto":
+            import os
+
+            session_type = os.environ.get("XDG_SESSION_TYPE", "")
+            if session_type == "x11":
+                source_kind = "x11"
+            elif session_type == "wayland":
+                source_kind = "portal"
+            elif os.environ.get("DISPLAY"):
+                source_kind = "x11"
+            else:
+                source_kind = "portal"  # portal will fail with a clear message
+            log.info("source=auto resolved to %s (XDG_SESSION_TYPE=%r)", source_kind, session_type)
+
+        if source_kind == "test":
             from ..capture.test_source import TestPatternSource
 
             return TestPatternSource(), FakeInput()
 
-        # Real capture: portal (Wayland). The fallback ladder is:
-        # extend(VIRTUAL) -> caller retries mirror -> X11/uinput (future).
+        if source_kind == "x11":
+            from ..capture.x11 import X11Source
+
+            source_x11: VideoSource = X11Source(settings.mode, encoder_pref=self.config.encoder)
+            input_backend = self._make_uinput_or_view_only()
+            return source_x11, input_backend
+
+        # Wayland: portal capture + portal input on the same session.
         from ..capture.pipeline import PortalSource
         from ..input.portal_input import PortalInput
 
@@ -79,6 +100,21 @@ class UbuDeskServer:
 
         source.start = start  # type: ignore[method-assign]
         return source, proxy
+
+    def _make_uinput_or_view_only(self) -> InputBackend:
+        """uinput input for X11; falls back to view-only (logged) if denied."""
+        try:
+            from ..input.uinput_input import UinputInput
+
+            return UinputInput()
+        except (RuntimeError, OSError) as exc:
+            log.warning(
+                "input disabled (view-only stream): %s -- fix: install "
+                "server/packaging/99-ubudesk.rules and add your user to the "
+                "'input' group, then re-login",
+                exc,
+            )
+            return FakeInput()
 
     # ------------------------------------------------------------------- run
 

@@ -17,11 +17,14 @@ Your xdg-desktop-portal does not advertise VIRTUAL sources
 1. **Update**: Ubuntu 24.04+ with GNOME on Wayland supports it via
    `xdg-desktop-portal-gnome`. `sudo apt install xdg-desktop-portal-gnome`,
    then log out/in.
-2. **Check the session type**: `echo $XDG_SESSION_TYPE` must print `wayland`.
-   On the login screen pick "Ubuntu" (Wayland), not "Ubuntu on Xorg".
-3. **Use mirror mode** (app Settings → mode → mirror). Works everywhere.
-4. X11 virtual-output support (xrandr/EVDI) is planned (milestone M8) but not
-   implemented yet.
+2. **Check the session type**: `echo $XDG_SESSION_TYPE`. On `wayland` the
+   portal path is used; on `x11` the xrandr ladder is used instead (see the
+   next section).
+3. **On X11**: extend needs a `VIRTUAL` xrandr output, a spare disconnected
+   connector, or the `evdi` module (`sudo apt install evdi-dkms`). Run
+   `ubudesk doctor` — the support matrix at the end tells you which rung of
+   the ladder applies and what to install.
+4. **Use mirror mode** (app Settings → mode → mirror). Works everywhere.
 
 Confirm with:
 

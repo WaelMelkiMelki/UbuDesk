@@ -1,5 +1,6 @@
 package app.ubudesk.client
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -49,7 +50,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 val state by viewModel.state.collectAsState()
+                val settings by viewModel.settings.collectAsState()
                 var showSettings by remember { mutableStateOf(false) }
+
+                // Landscape by default; portrait allowed when the user opts out.
+                requestedOrientation = if (settings.lockLandscape) {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+                }
 
                 when {
                     showSettings -> SettingsScreen(

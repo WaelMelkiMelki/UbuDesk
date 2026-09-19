@@ -94,17 +94,11 @@ class PortalSource(VideoSource):
         log.info("using encoder: %s", factory)
 
         # 3. pipeline
-        enc_frag = encoders.encoder_fragment(factory, settings.bitrate_kbps, fps)
+        tail = encoders.pipeline_tail(factory, width, height, fps, settings.bitrate_kbps)
         desc = (
             f"pipewiresrc name=src fd={self.session.pipewire_fd} "
             f"path={self.session.node_id} do-timestamp=true keepalive-time=100 "
-            f"! videorate drop-only=true max-rate={fps} "
-            f"! videoconvert ! videoscale "
-            f"! video/x-raw,format=I420,width={width},height={height} "
-            f"! {enc_frag} "
-            f"! video/x-h264,stream-format=byte-stream,alignment=au "
-            f"! h264parse config-interval=-1 "
-            f"! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
+            f"! {tail}"
         )
         log.debug("pipeline: %s", desc)
         try:

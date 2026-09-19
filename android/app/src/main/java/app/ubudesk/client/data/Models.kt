@@ -9,25 +9,47 @@ import org.json.JSONObject
 
 /** Stream / input settings selected in the Settings screen. */
 data class StreamSettings(
-    val resolutionPreset: String = "1920x1200", // "native" or "WxH"
+    val resolutionPreset: String = "auto", // "auto", "native" or "WxH"
     val fps: Int = 60,
     val bitrateKbps: Int = 15000,
     val touchMode: Boolean = true,
     val showStats: Boolean = false,
     val compatibilityDecode: Boolean = false,
     val mode: String = "extend",
+    val lockLandscape: Boolean = true,
 ) {
+    companion object {
+        /** Smallest-width threshold (dp) that separates phones from tablets. */
+        const val TABLET_MIN_SW_DP = 600
+
+        /**
+         * "auto" preset: pick a stream width by device class.
+         * Tablets decode/display 1920-wide comfortably; phones get a lighter
+         * 1280-wide stream (screen is small, saves battery and bitrate).
+         */
+        fun autoPreferredWidth(deviceW: Int, deviceH: Int, densityDpi: Int): Int {
+            val swDp = minOf(deviceW, deviceH) * 160 / maxOf(densityDpi, 1)
+            return if (swDp >= TABLET_MIN_SW_DP) 1920 else 1280
+        }
+    }
+
     /** Resolve the preset into even (w, h) given the device's display size. */
-    fun resolve(deviceW: Int, deviceH: Int): Pair<Int, Int> {
-        val (w, h) = if (resolutionPreset == "native") {
-            deviceW to deviceH
-        } else {
-            val parts = resolutionPreset.split("x")
-            val pw = parts.getOrNull(0)?.toIntOrNull() ?: 1920
-            val ph = parts.getOrNull(1)?.toIntOrNull() ?: 1200
-            // aspect-match to the device: keep preset width, device aspect
-            val aspect = if (deviceH > 0) deviceW.toDouble() / deviceH else pw.toDouble() / ph
-            if (aspect >= 1.0) pw to (pw / aspect).toInt() else (ph * aspect).toInt() to ph
+    fun resolve(deviceW: Int, deviceH: Int, densityDpi: Int = 240): Pair<Int, Int> {
+        val (w, h) = when (resolutionPreset) {
+            "native" -> deviceW to deviceH
+            "auto" -> {
+                val pw = autoPreferredWidth(deviceW, deviceH, densityDpi)
+                val aspect = if (deviceH > 0) deviceW.toDouble() / deviceH else 16.0 / 10.0
+                if (aspect >= 1.0) pw to (pw / aspect).toInt() else pw to (pw * 10 / 16)
+            }
+            else -> {
+                val parts = resolutionPreset.split("x")
+                val pw = parts.getOrNull(0)?.toIntOrNull() ?: 1920
+                val ph = parts.getOrNull(1)?.toIntOrNull() ?: 1200
+                // aspect-match to the device: keep preset width, device aspect
+                val aspect = if (deviceH > 0) deviceW.toDouble() / deviceH else pw.toDouble() / ph
+                if (aspect >= 1.0) pw to (pw / aspect).toInt() else (ph * aspect).toInt() to ph
+            }
         }
         return (w and 1.inv()) to (h and 1.inv())
     }

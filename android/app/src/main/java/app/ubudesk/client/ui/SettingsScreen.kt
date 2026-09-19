@@ -1,6 +1,8 @@
 package app.ubudesk.client.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.ubudesk.client.MainViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
     val settings by viewModel.settings.collectAsState()
@@ -59,8 +62,8 @@ fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
         Spacer(Modifier.height(16.dp))
 
         Text("Resolution", style = MaterialTheme.typography.titleMedium)
-        Row {
-            for (preset in listOf("native", "1920x1200", "1600x1000", "1280x800")) {
+        FlowRow {
+            for (preset in listOf("auto", "native", "1920x1200", "1600x1000", "1280x800")) {
                 FilterChip(
                     selected = settings.resolutionPreset == preset,
                     onClick = { viewModel.saveSettings(settings.copy(resolutionPreset = preset)) },
@@ -69,6 +72,11 @@ fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                 )
             }
         }
+        Text(
+            "auto = 1920-wide on tablets, 1280-wide on phones (matched to this screen's aspect)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(16.dp))
 
         Text("Frame rate", style = MaterialTheme.typography.titleMedium)
@@ -112,6 +120,12 @@ fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
             subtitle = "Disable low-latency decoder hints. Try this if the video never appears.",
             checked = settings.compatibilityDecode,
             onChange = { viewModel.saveSettings(settings.copy(compatibilityDecode = it)) },
+        )
+        SettingSwitch(
+            title = "Landscape only",
+            subtitle = "Keep the app in landscape (recommended). Off allows portrait too.",
+            checked = settings.lockLandscape,
+            onChange = { viewModel.saveSettings(settings.copy(lockLandscape = it)) },
         )
     }
 }

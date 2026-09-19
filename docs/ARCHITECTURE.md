@@ -72,18 +72,45 @@ and no layout races. Closing the session removes the virtual monitor and
 Mutter moves the windows back; cleanup is guaranteed even after `kill -9`
 because the session dies with the D-Bus connection.
 
-### Capture fallback ladder
+### Capture backends and the fallback ladder
+
+`--source auto` (the default) picks the backend from `XDG_SESSION_TYPE`:
+`wayland` → portal, `x11` → X11. Both implement the same `VideoSource`
+interface and share the encode tail (`encoders.pipeline_tail`).
+
+**Wayland (portal):**
 
 1. Portal `VIRTUAL` source (extend). `doctor` reports whether
    `AvailableSourceTypes` has bit 4.
 2. Portal `MONITOR` source (mirror) — works on every Wayland desktop.
-3. X11 sessions: planned `xrandr` virtual output + `ximagesrc` + uinput
-   (milestone M8, not implemented yet); mirror-via-portal generally still
-   works on X11 GNOME because xdg-desktop-portal-gnome runs there too.
 
-The server never falls back silently: the client receives
+**X11 (`capture/x11.py`) — extend ladder, first rung that works wins:**
+
+1. `xrandr` `VIRTUALn` output (xf86-video-dummy / intel virtual heads):
+   `--newmode` + `--addmode` + `--output VIRTUALn --mode … --right-of primary`.
+2. Any **disconnected** physical connector forced on the same way (works on
+   modesetting/amdgpu/intel for most connector types). EVDI note: when the
+   `evdi` kernel module is loaded, its virtual connector shows up as a
+   disconnected output and is picked up by this rung.
+3. `xrandr --fb` enlarge + `--setmonitor UbuDesk` region — no real CRTC, so
+   some compositors won't render there; best effort only, flagged in the log.
+4. Nothing works → `CaptureError("no_virtual_monitor")`; the client is told
+   to use mirror.
+
+Mirror on X11 is plain `ximagesrc` over the primary output's geometry — no
+ladder involved, works everywhere. All xrandr interaction goes through an
+injectable `Runner`, so the whole ladder is unit-tested headlessly with a
+scripted fake (`tests/test_x11.py`). Stale `ubudesk_*` modes / `UbuDesk`
+monitors from a crashed run are cleaned on every start, and teardown is
+registered with `atexit` as well as `stop()`.
+
+X11 input is injected with `uinput` (python-evdev). If `/dev/uinput` is not
+writable the stream continues **view-only** and the log says exactly how to
+fix it (udev rule + `input` group).
+
+The server never falls back silently between modes: the client receives
 `error.code = no_virtual_monitor` with instructions and the user chooses
-mirror mode explicitly.
+mirror mode explicitly. The active backend/mode/encoder is always logged.
 
 ### Virtual monitor resolution
 

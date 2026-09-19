@@ -25,6 +25,28 @@ class SettingsTest {
     }
 
     @Test
+    fun autoPresetPicksWidthByDeviceClass() {
+        val s = StreamSettings(resolutionPreset = "auto")
+        // 10" 16:10 tablet, 2560x1600 @ 320dpi -> sw = 1600*160/320 = 800dp >= 600 -> 1920 wide
+        val (tw, th) = s.resolve(2560, 1600, 320)
+        assertEquals(1920, tw)
+        assertEquals(1200, th)
+        // 6.7" phone, 2400x1080 @ 480dpi -> sw = 1080*160/480 = 360dp < 600 -> 1280 wide
+        val (pw, ph) = s.resolve(2400, 1080, 480)
+        assertEquals(1280, pw)
+        assertEquals(576, ph) // device aspect 20:9 kept
+        assertEquals(0, pw % 2)
+        assertEquals(0, ph % 2)
+    }
+
+    @Test
+    fun autoPreferredWidthThreshold() {
+        // exactly 600dp smallest-width counts as tablet
+        assertEquals(1920, StreamSettings.autoPreferredWidth(1920, 1200, 320))
+        assertEquals(1280, StreamSettings.autoPreferredWidth(2340, 1080, 440))
+    }
+
+    @Test
     fun nativeResolvesToDeviceSize() {
         val s = StreamSettings(resolutionPreset = "native")
         val (w, h) = s.resolve(2561, 1601) // odd device sizes get evened

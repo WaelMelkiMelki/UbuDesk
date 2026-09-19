@@ -17,7 +17,9 @@ template (`.github/ISSUE_TEMPLATE/bug_report.md`).
 | Portal mirror capture | ❌ needs GNOME session | **NO — needs M2-1** |
 | Portal VIRTUAL monitor (extend) | ❌ needs GNOME session | **NO — needs M3-1** |
 | Portal input injection | ❌ needs GNOME session | **NO — needs M5-x** |
-| uinput fallback input | ❌ needs /dev/uinput | **NO — needs M5-4** |
+| X11 mirror capture (ximagesrc) | ❌ needs X11 session | **NO — needs M8-1** |
+| X11 extend (xrandr ladder) | ⚠️ ladder logic unit-tested with fake xrandr | **NO — needs M8-2** |
+| uinput input (X11 primary / Wayland fallback) | ❌ needs /dev/uinput | **NO — needs M5-4 / M8-3** |
 | Hardware encoders (VA/NVENC) | ❌ needs GPU | **NO — needs M6-1** |
 | mDNS discovery | ⚠️ advertise starts in CI, browse untested | **NO — needs M4-3** |
 | USB mode | ❌ needs device | **NO — needs M4-4** |
@@ -152,3 +154,38 @@ systemctl --user start ubudesk && systemctl --user status ubudesk
 
 **Expected:** service is active; a phone can connect. `systemctl --user stop
 ubudesk` stops it cleanly.
+
+---
+
+### M8-1 — X11 mirror
+
+Log into an X11 session (`echo $XDG_SESSION_TYPE` → `x11`), then
+`ubudesk serve --pair` (source auto-selects x11) and connect in mirror mode.
+**Expected:** log line `X11 mirror: region=…`; the phone shows the desktop.
+
+### M8-2 — X11 extend (xrandr ladder)
+
+1. `ubudesk doctor` — read the support-matrix verdict: which extend rung
+   applies (`VIRTUAL output`, `disconnected connector`, `evdi`, or none)?
+2. Connect in extend mode. **Expected:** either a new monitor appears in the
+   display settings (`xrandr --listmonitors` shows it, mode named
+   `ubudesk_WxH_F`), or the server refuses with `no_virtual_monitor` and the
+   app offers mirror — never a silent wrong mode.
+3. Kill the server with `kill -9`, restart, connect again. **Expected:** the
+   stale `ubudesk_*` mode is cleaned up on start (check `xrandr --query`).
+4. Disconnect normally. **Expected:** the virtual output is off and the mode
+   removed.
+
+### M8-3 — X11 input (uinput)
+
+Install the udev rule (see TROUBLESHOOTING) and re-login. On the streamed
+X11 desktop: tap, drag, two-finger scroll, keyboard. **Expected:** all work;
+without uinput access the server logs `input disabled (view-only stream)`
+with the fix.
+
+### M8-4 — Per-Ubuntu-version pass
+
+Repeat M2-1 (Wayland mirror) or M8-1 (X11 mirror) + doctor on each Ubuntu
+release you have (22.04 / 24.04 / 24.10 / 25.x), and paste each
+`ubudesk doctor --json` output into an issue so the README support table can
+be flipped to “verified”.

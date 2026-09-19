@@ -1,6 +1,7 @@
 """GStreamer H.264 encoder selection.
 
-Order of preference (``--encoder auto``): vah264enc (VA-API, Intel/AMD),
+Order of preference (``--encoder auto``): vah264enc (GStreamer >= 1.22,
+Intel/AMD), vaapih264enc (GStreamer 1.20/1.22 VA-API, Ubuntu 22.04),
 nvh264enc (NVENC), x264enc (software, always the safety net).
 
 Property names differ between plugins and GStreamer versions, so properties
@@ -14,14 +15,15 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# name -> (element factory, {property: value builder})
+# preference key -> gst factory name
 _CANDIDATES: dict[str, str] = {
     "va": "vah264enc",
+    "vaapi": "vaapih264enc",
     "nvenc": "nvh264enc",
     "x264": "x264enc",
 }
 
-_AUTO_ORDER = ["va", "nvenc", "x264"]
+_AUTO_ORDER = ["va", "vaapi", "nvenc", "x264"]
 
 
 def gst_available() -> bool:
@@ -46,7 +48,13 @@ def find_encoder(preference: str = "auto") -> str | None:
     if not Gst.is_initialized():
         Gst.init(None)
 
-    order = _AUTO_ORDER if preference == "auto" else [preference]
+    if preference == "auto":
+        order = _AUTO_ORDER
+    elif preference == "va":
+        # "va" preference accepts either VA plugin generation
+        order = ["va", "vaapi"]
+    else:
+        order = [preference]
     for key in order:
         factory_name = _CANDIDATES.get(key)
         if factory_name and Gst.ElementFactory.find(factory_name):
@@ -62,7 +70,8 @@ def encoder_fragment(factory_name: str, bitrate_kbps: int, fps: int) -> str:
             f"x264enc name=enc tune=zerolatency speed-preset=ultrafast bframes=0 "
             f"key-int-max={gop} bitrate={bitrate_kbps} byte-stream=true"
         )
-    # VA / NVENC: set common properties by name at runtime (see apply_properties)
+    # VA / VAAPI / NVENC: set common properties by name at runtime
+    # (see apply_properties).
     return f"{factory_name} name=enc"
 
 
@@ -80,6 +89,14 @@ def apply_properties(element, factory_name: str, bitrate_kbps: int, fps: int) ->
             "rate-control": "cbr",
             "b-frames": 0,
             "target-usage": 6,  # speed
+        }
+    elif factory_name == "vaapih264enc":
+        wanted = {
+            "bitrate": bitrate_kbps,
+            "keyframe-period": gop,
+            "rate-control": "cbr",
+            "max-bframes": 0,
+            "quality-level": 6,  # fastest
         }
     elif factory_name == "nvh264enc":
         wanted = {
@@ -115,6 +132,20 @@ def set_bitrate(element, factory_name: str, bitrate_kbps: int) -> bool:
         return False
     element.set_property("bitrate", bitrate_kbps)
     return True
+
+
+def pipeline_tail(factory_name: str, width: int, height: int, fps: int, bitrate_kbps: int) -> str:
+    """The shared encode tail: rate-limit, convert/scale, encode, parse, sink."""
+    enc = encoder_fragment(factory_name, bitrate_kbps, fps)
+    return (
+        f"videorate drop-only=true max-rate={fps} "
+        f"! videoconvert ! videoscale "
+        f"! video/x-raw,format=I420,width={width},height={height} "
+        f"! {enc} "
+        f"! video/x-h264,stream-format=byte-stream,alignment=au "
+        f"! h264parse config-interval=-1 "
+        f"! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
+    )
 
 
 def _enum_type():
