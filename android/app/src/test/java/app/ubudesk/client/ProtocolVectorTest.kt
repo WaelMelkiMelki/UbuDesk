@@ -31,8 +31,12 @@ class ProtocolVectorTest {
             is JSONObject -> {
                 assertTrue("$path: expected object", actual is JSONObject)
                 actual as JSONObject
-                assertEquals("$path: key sets differ", expected.keySet(), actual.keySet())
-                for (key in expected.keySet()) {
+                // keys() exists in both Android's JSONObject API and the JVM
+                // test implementation; keySet() is specific to JSON-java.
+                val expectedKeys = expected.keys().asSequence().toSet()
+                val actualKeys = actual.keys().asSequence().toSet()
+                assertEquals("$path: key sets differ", expectedKeys, actualKeys)
+                for (key in expectedKeys) {
                     jsonEquals(expected.get(key), actual.get(key), "$path.$key")
                 }
             }
