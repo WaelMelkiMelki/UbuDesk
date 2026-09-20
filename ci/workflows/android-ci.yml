@@ -8,6 +8,7 @@ on:
       - "ci/**"
       - ".github/workflows/android-ci.yml"
       - "scripts/enable-ci.sh"
+      - "scripts/ci-run.sh"
   pull_request:
     paths:
       - "android/**"
@@ -15,6 +16,7 @@ on:
       - "ci/**"
       - ".github/workflows/android-ci.yml"
       - "scripts/enable-ci.sh"
+      - "scripts/ci-run.sh"
   workflow_dispatch:
 
 permissions:
@@ -34,21 +36,31 @@ jobs:
       - name: Check workflow copies
         run: ./scripts/enable-ci.sh --check
 
-      - uses: actions/setup-java@v4
+      # Current command-line SDK tools can require a newer JVM than the app.
+      # Use the hosted runner's SDK instead of bootstrapping deprecated tools.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          printf 'y\n%.0s' {1..100} > "$RUNNER_TEMP/android-license-responses"
+          ./scripts/ci-run.sh "$SDKMANAGER" --licenses < "$RUNNER_TEMP/android-license-responses"
+          ./scripts/ci-run.sh "$SDKMANAGER" "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Select Java 17 for the app build
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Unit tests, lint, and debug APK
         working-directory: android
-        run: ./gradlew --no-daemon --console=plain --stacktrace testDebugUnitTest lintDebug assembleDebug
+        run: ../scripts/ci-run.sh ./gradlew --no-daemon --console=plain --stacktrace testDebugUnitTest lintDebug assembleDebug
 
       - name: Verify signature and package the hardware-test build
         run: |
