@@ -90,9 +90,16 @@ async def test_backlog_drops_until_keyframe(tmp_path):
     assert started["t"] == "started"
     assert source.on_frame is not None
 
-    # Flood the queue far beyond its capacity with delta frames.
     key = b"\x00\x00\x00\x01\x65KEY"
     delta = b"\x00\x00\x00\x01\x41DELTA"
+    # Leave the startup keyframe gate first, so this tests actual queue
+    # overflow rather than merely discarding pre-IDR startup deltas.
+    source.on_frame(key, 0, True, True)
+    ftype, payload = await asyncio.wait_for(read_frame(reader), 5)
+    assert ftype == TYPE_VIDEO and payload[8] & 1
+    requests_before_flood = source.keyframe_requests
+
+    # Flood the queue far beyond its capacity with delta frames.
     for i in range(QUEUE_MAX_FRAMES * 6):
         source.on_frame(delta, i, False, False)
     # After the flood, a keyframe arrives.
@@ -100,7 +107,7 @@ async def test_backlog_drops_until_keyframe(tmp_path):
     await asyncio.sleep(0.2)
 
     # The session must have requested a keyframe due to backlog.
-    assert source.keyframe_requests >= 1
+    assert source.keyframe_requests > requests_before_flood
 
     # Read what actually got sent: total video frames must be far below the
     # flood size, and the keyframe must be among them.

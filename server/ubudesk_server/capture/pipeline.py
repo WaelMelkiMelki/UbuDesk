@@ -50,6 +50,7 @@ class PortalSource(VideoSource):
         self.session: PortalSession | None = None
         self._fps = 30
         self._stopped = threading.Event()
+        self._cancelled = threading.Event()
 
     # -- VideoSource ---------------------------------------------------------
 
@@ -75,7 +76,9 @@ class PortalSource(VideoSource):
 
         # 1. portal session (may pop the GNOME permission dialog)
         try:
-            self.session = PortalSession(restore_token=self._restore_token)
+            self.session = PortalSession(
+                restore_token=self._restore_token, cancelled=self._cancelled
+            )
             self.session.open(self._mode, want_input=True)
         except PortalError as exc:
             code = "no_virtual_monitor" if "no_virtual_monitor" in str(exc) else "capture_failed"
@@ -142,20 +145,32 @@ class PortalSource(VideoSource):
         self.request_keyframe()
         return StreamInfo(width, height, fps, factory)
 
+    def cancel_start(self) -> None:
+        self._cancelled.set()
+        session = self.session
+        if session is not None:
+            session.cancel()
+
     def stop(self) -> None:
         if self._stopped.is_set():
             return
         self._stopped.set()
-        if self._pipeline is not None:
-            from gi.repository import Gst
+        pipeline, self._pipeline = self._pipeline, None
+        glib_loop, self._glib_loop = self._glib_loop, None
+        session, self.session = self.session, None
+        self._encoder_element = None
+        try:
+            if pipeline is not None:
+                from gi.repository import Gst
 
-            self._pipeline.set_state(Gst.State.NULL)
-            self._pipeline = None
-        if self._glib_loop is not None:
-            self._glib_loop.quit()
-            self._glib_loop = None
-        if self.session is not None:
-            self.session.close()
+                pipeline.set_state(Gst.State.NULL)
+        finally:
+            try:
+                if glib_loop is not None:
+                    glib_loop.quit()
+            finally:
+                if session is not None:
+                    session.close()
 
     def request_keyframe(self) -> None:
         if self._encoder_element is None:
@@ -216,8 +231,7 @@ class PortalSource(VideoSource):
 
         bus.connect("message", on_message)
 
-        def run():
-            self._glib_loop.run()
-
-        self._glib_loop_thread = threading.Thread(target=run, name="ubudesk-glib", daemon=True)
+        self._glib_loop_thread = threading.Thread(
+            target=self._glib_loop.run, name="ubudesk-glib", daemon=True
+        )
         self._glib_loop_thread.start()

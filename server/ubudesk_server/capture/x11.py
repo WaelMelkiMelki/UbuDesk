@@ -483,15 +483,20 @@ class X11Source(VideoSource):
         if self._stopped.is_set():
             return
         self._stopped.set()
-        if self._pipeline is not None:
-            from gi.repository import Gst
+        pipeline, self._pipeline = self._pipeline, None
+        glib_loop, self._glib_loop = self._glib_loop, None
+        self._encoder_element = None
+        try:
+            if pipeline is not None:
+                from gi.repository import Gst
 
-            self._pipeline.set_state(Gst.State.NULL)
-            self._pipeline = None
-        if self._glib_loop is not None:
-            self._glib_loop.quit()
-            self._glib_loop = None
-        self._teardown_extend()
+                pipeline.set_state(Gst.State.NULL)
+        finally:
+            try:
+                if glib_loop is not None:
+                    glib_loop.quit()
+            finally:
+                self._teardown_extend()
 
     def _teardown_extend(self) -> None:
         if self._extend is not None:

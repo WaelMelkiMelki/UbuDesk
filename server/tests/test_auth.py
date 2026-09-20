@@ -86,3 +86,59 @@ def test_revoke(tmp_path: Path):
 def test_tokens_are_unique():
     seen = {auth.generate_token()[0] for _ in range(50)}
     assert len(seen) == 50
+
+
+def test_other_store_revocation_is_seen_and_never_resurrected(tmp_path):
+    path = tmp_path / "devices.json"
+    server_store = auth.DeviceStore(path)
+    token, token_hash = auth.generate_token()
+    server_store.add("phone", "Phone", token_hash)
+    cli_store = auth.DeviceStore(path)
+    assert cli_store.remove("phone")
+    assert not server_store.verify_token("phone", token)
+    assert len(auth.DeviceStore(path)) == 0
+
+
+def test_stale_store_updates_preserve_other_devices(tmp_path):
+    path = tmp_path / "devices.json"
+    first = auth.DeviceStore(path)
+    second = auth.DeviceStore(path)
+    token, token_hash = auth.generate_token()
+    first.add("phone", "Phone", token_hash)
+    second.add("tablet", "Tablet", token_hash)
+    assert {d.client_id for d in first.list()} == {"phone", "tablet"}
+    assert first.verify_token("phone", token)
+    assert len(second) == 2
+    second.remove("phone")
+    first.add("other", "Other", token_hash)
+    assert {d.client_id for d in second.list()} == {"tablet", "other"}
+
+
+def test_missing_or_corrupt_registry_fails_closed_after_successful_auth(tmp_path):
+    path = tmp_path / "devices.json"
+    store = auth.DeviceStore(path)
+    token, token_hash = auth.generate_token()
+    store.add("phone", "Phone", token_hash)
+    path.unlink()
+    assert not store.verify_token("phone", token)
+    for invalid in ("{broken", "[]", '{"phone": null}', '{"phone": {"token_hash": 42}}'):
+        store.add("phone", "Phone", token_hash)
+        path.write_text(invalid)
+        assert not store.verify_token("phone", token)
+        assert path.read_text() == invalid
+
+
+def test_concurrent_stores_do_not_lose_updates(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "devices.json"
+    stores = [auth.DeviceStore(path) for _ in range(24)]
+    _, token_hash = auth.generate_token()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(store.add, str(i), f"Phone {i}", token_hash)
+            for i, store in enumerate(stores)
+        ]
+        for future in futures:
+            future.result(timeout=5)
+    assert len(auth.DeviceStore(path)) == len(stores)

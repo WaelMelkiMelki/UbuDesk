@@ -26,6 +26,9 @@ template (`.github/ISSUE_TEMPLATE/bug_report.md`).
 
 ## Setup (once)
 
+For a CI-built APK and matching server source, start with
+[QUICK_TEST.md](QUICK_TEST.md), then continue with the full checklist below.
+
 ```bash
 git clone <repo> && cd <repo>/server
 ./scripts/install-deps.sh
@@ -92,9 +95,18 @@ session dies with the process).
 ### M4-1 — Pairing edge cases
 
 - Wrong PIN 5 times → app shows "locked … 60 s"; server log shows the lockout.
+- On the PIN screen, wait 15–30 s before submitting; compare the security
+  code first. **Expected:** no premature disconnect, then successful pairing.
+  Waiting longer than 120 s without authenticating must disconnect.
 - Reconnect after pairing → **no PIN asked** (token reused).
-- `ubudesk devices` lists the phone; `ubudesk devices --revoke <id>` then
-  reconnect → app falls back to pairing.
+- `ubudesk devices` lists the phone. While streaming, run
+  `ubudesk devices --revoke <id>` in another terminal. **Expected:** the active
+  stream disconnects shortly after the next one-second authorization check;
+  reconnect cannot reuse the old token. Start a fresh pairing window to pair again.
+- Leave the desktop capture permission dialog open for at least 15 s.
+  **Expected:** the app stays connected. Cancel on the phone: the desktop
+  request should be dismissed and no monitor should appear later. Reconnect
+  and approve a fresh request; there must be no stale callbacks/streams.
 
 ### M4-2 — Pinning
 

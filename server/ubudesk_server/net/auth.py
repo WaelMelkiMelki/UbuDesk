@@ -10,6 +10,7 @@ Security properties:
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -17,6 +18,8 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,30 +57,67 @@ class PairedDevice:
     last_seen: float
 
 
+def token_fingerprint(token_b64: str) -> str | None:
+    """Hash a wire token without retaining its bearer credential in a session."""
+    raw = _decode_token(token_b64)
+    return _hash_token(raw) if raw is not None and len(raw) == 32 else None
+
+
 class DeviceStore:
-    """Persisted paired-device registry (devices.json, 0600)."""
+    """Process-safe paired-device registry (devices.json, 0600).
+
+    Every operation reloads under a stable sidecar file lock. Locking the JSON
+    file itself is not sufficient: atomic replacement changes its inode. This
+    prevents a running server's last_seen update from undoing a CLI revocation
+    or overwriting a device added by another process.
+    """
 
     def __init__(self, path: Path):
         self._path = path
         self._devices: dict[str, PairedDevice] = {}
-        self._load()
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        fd = os.open(self._path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self._load()
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _load(self) -> None:
-        if not self._path.exists():
-            return
+        # Fail closed on deletion, unreadable data, or malformed JSON; never
+        # keep previously trusted entries after an unsuccessful reload.
+        self._devices = {}
         try:
             data = json.loads(self._path.read_text())
-        except (OSError, json.JSONDecodeError):
-            log.warning("could not read %s; starting with no paired devices", self._path)
-            return
-        for cid, entry in data.items():
-            self._devices[cid] = PairedDevice(
-                client_id=cid,
-                name=entry.get("name", "?"),
-                token_hash=entry.get("token_hash", ""),
-                paired_at=entry.get("paired_at", 0.0),
-                last_seen=entry.get("last_seen", 0.0),
-            )
+            if not isinstance(data, dict):
+                raise ValueError("registry must be an object")
+            devices = {}
+            for cid, entry in data.items():
+                if not isinstance(entry, dict):
+                    raise ValueError("invalid device entry")
+                token_hash = entry.get("token_hash", "")
+                if (
+                    not isinstance(token_hash, str)
+                    or len(token_hash) != 64
+                    or any(ch not in "0123456789abcdef" for ch in token_hash)
+                ):
+                    raise ValueError("invalid token hash")
+                devices[cid] = PairedDevice(
+                    client_id=cid,
+                    name=str(entry.get("name", "?")),
+                    token_hash=token_hash,
+                    paired_at=float(entry.get("paired_at", 0.0)),
+                    last_seen=float(entry.get("last_seen", 0.0)),
+                )
+            self._devices = devices
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError):
+            log.warning("could not read %s; treating all devices as unpaired", self._path)
 
     def _save(self) -> None:
         data = {
@@ -90,42 +130,60 @@ class DeviceStore:
             for d in self._devices.values()
         }
         tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.chmod(tmp, 0o600)
-        tmp.replace(self._path)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(self._path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def add(self, client_id: str, name: str, token_hash: str) -> None:
-        now = time.time()
-        self._devices[client_id] = PairedDevice(client_id, name, token_hash, now, now)
-        self._save()
+        with self._transaction():
+            now = time.time()
+            self._devices[client_id] = PairedDevice(client_id, name, token_hash, now, now)
+            self._save()
 
     def remove(self, client_id: str) -> bool:
-        if client_id in self._devices:
-            del self._devices[client_id]
-            self._save()
-            return True
-        return False
+        with self._transaction():
+            if client_id in self._devices:
+                del self._devices[client_id]
+                self._save()
+                return True
+            return False
 
     def list(self) -> list[PairedDevice]:
-        return sorted(self._devices.values(), key=lambda d: d.paired_at)
+        with self._transaction():
+            return sorted(self._devices.values(), key=lambda d: d.paired_at)
 
     def __len__(self) -> int:
-        return len(self._devices)
+        with self._transaction():
+            return len(self._devices)
+
+    def _matches(self, client_id: str, presented: str) -> bool:
+        device = self._devices.get(client_id)
+        # Always compare, including when the id does not exist.
+        expected = device.token_hash if device else "0" * 64
+        return hmac.compare_digest(presented, expected) and device is not None
 
     def verify_token(self, client_id: str, token_b64: str) -> bool:
-        """Constant-time token check for a client id."""
-        raw = _decode_token(token_b64)
-        if raw is None:
+        presented = token_fingerprint(token_b64)
+        if presented is None:
             return False
-        presented = _hash_token(raw)
-        device = self._devices.get(client_id)
-        # Always run a comparison so timing does not reveal whether the id exists.
-        expected = device.token_hash if device else "0" * 64
-        ok = hmac.compare_digest(presented, expected) and device is not None
-        if ok and device is not None:
-            device.last_seen = time.time()
+        with self._transaction():
+            if not self._matches(client_id, presented):
+                return False
+            self._devices[client_id].last_seen = time.time()
             self._save()
-        return ok
+            return True
+
+    def is_authorized(self, client_id: str, token_hash: str) -> bool:
+        """Read-only recheck for active sessions, including re-pair/token rotation."""
+        with self._transaction():
+            return self._matches(client_id, token_hash)
 
 
 class PinManager:

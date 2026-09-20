@@ -56,7 +56,10 @@ monitor) or `mirror` (existing monitor).
 
 `start` may be sent again while streaming to renegotiate (resolution/fps
 change): the server stops the old stream, starts a new one, and replies with
-a fresh `started`.
+a fresh `started`. A second `start` while a startup is still pending receives
+`error.code = bad_request`; it does not launch another permission dialog.
+Input is ignored until the stream has started. Initial `bitrate_kbps` must be
+between 500 and 60000.
 
 ## 3. Runtime messages
 
@@ -91,8 +94,18 @@ Server → client:
 {"t":"bye"}
 ```
 
-**Idle rule:** the client pings every 2 s; either side may close the
-connection after 6 s of silence.
+**Connection deadlines:**
+
+- The initial `hello` exchange has a 6 s deadline.
+- After `auth_required`, the user has **120 s** to compare the security code
+  and submit a PIN (or authenticate with a saved token). This is separate from
+  the PIN's 10-minute lifetime. No pings are sent or accepted before `auth_ok`.
+  Unknown frames do not extend the server's authentication deadline.
+- **Only after `auth_ok`**, the client pings every 2 s; either side may close
+  after 6 s of silence. The server continues answering pings while capture is
+  starting, including while a desktop permission dialog is open.
+- Disconnecting during startup cancels the attempt. A late native result is
+  discarded and cleaned up, never published as a new stream.
 
 ## 4. Video stream invariants
 
@@ -128,3 +141,11 @@ the same files.
   8 hex chars ("security code") so the user can compare during pairing.
   Residual risk: an active MITM **during the very first pairing** could
   intercept; compare the security code to rule that out.
+- Revocation: `ubudesk devices --revoke CLIENT_ID` prevents new token logins
+  without restarting the server. The registry uses a sidecar file lock and
+  atomic replacement so concurrent pairing/last-seen updates cannot undo a
+  revocation. Missing or corrupt registry data is treated as unpaired.
+  Active sessions recheck authorization every second and close on revocation
+  or token replacement, including while idle or waiting for capture permission.
+  The server sends `{"t":"error","code":"revoked","message":"Pairing was revoked."}`
+  before closing when the connection is writable. A new PIN pairing is required.

@@ -19,8 +19,11 @@ RemoteDesktop v1+) and must be verified on real hardware with
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
+import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -61,7 +64,7 @@ class PortalSession:
     for Request.Response signals.
     """
 
-    def __init__(self, restore_token: str = "") -> None:
+    def __init__(self, restore_token: str = "", cancelled: threading.Event | None = None) -> None:
         import gi
 
         gi.require_version("Gio", "2.0")
@@ -69,8 +72,15 @@ class PortalSession:
 
         self._Gio = Gio
         self._GLib = GLib
-        self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self._cancelled = cancelled if cancelled is not None else threading.Event()
+        self._cancellable = Gio.Cancellable()
+        if self._cancelled.is_set():
+            self._cancellable.cancel()
+        self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, self._cancellable)
         self._token_counter = 0
+        # Gio shares its session-bus connection. Overlapping/late startups must
+        # not reuse another PortalSession's request or session object paths.
+        self._token_prefix = uuid.uuid4().hex
         self.session_handle: str | None = None
         self.restore_token: str = restore_token
         self.new_restore_token: str = ""
@@ -82,11 +92,20 @@ class PortalSession:
         sender = self._bus.get_unique_name()  # e.g. ":1.42"
         self._sender_path = re.sub(r"\.", "_", sender.lstrip(":"))
 
+    def cancel(self) -> None:
+        """Signal cancellation from the asyncio thread; teardown stays on the worker."""
+        self._cancelled.set()
+        self._cancellable.cancel()
+
+    def _check_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise PortalError("capture startup cancelled")
+
     # ------------------------------------------------------------------ dbus
 
     def _next_token(self, prefix: str) -> str:
         self._token_counter += 1
-        return f"{prefix}{self._token_counter}"
+        return f"{prefix}{self._token_prefix}_{self._token_counter}"
 
     def _request_path(self, handle_token: str) -> str:
         return f"{PORTAL_PATH}/request/{self._sender_path}/{handle_token}"
@@ -106,6 +125,7 @@ class PortalSession:
         """
         GLib = self._GLib
         Gio = self._Gio
+        self._check_cancelled()
 
         handle_token = self._next_token("ubudesk")
         options = dict(options)
@@ -131,8 +151,9 @@ class PortalSession:
             on_response,
         )
         try:
-            variant_options = GLib.Variant("a{sv}", options)
-            args = list(params) + [variant_options]
+            # The outer constructor wants native values for o/s/a{sv}, not
+            # already-wrapped Variants (only the dictionary VALUES are variants).
+            args = [p.unpack() for p in params] + [options]
             signature = "(" + "".join(_sig(p) for p in params) + "a{sv})"
             self._bus.call_sync(
                 PORTAL_BUS,
@@ -143,15 +164,37 @@ class PortalSession:
                 None,
                 Gio.DBusCallFlags.NONE,
                 int(timeout_s * 1000),
-                None,
+                self._cancellable,
             )
             # Pump the main context until the Response signal lands.
             context = GLib.MainContext.default()
             deadline = GLib.get_monotonic_time() + int(timeout_s * 1_000_000)
             while not done["flag"]:
+                self._check_cancelled()
                 context.iteration(False)
                 if GLib.get_monotonic_time() > deadline:
                     raise PortalError(f"{iface}.{method}: timed out waiting for response")
+                if not done["flag"]:
+                    self._cancelled.wait(0.01)  # don't busy-spin during a permission dialog
+            self._check_cancelled()
+        except Exception as exc:
+            # Abandoning a Request locally does not dismiss the desktop dialog.
+            # Close it explicitly, with a fresh (non-cancelled) D-Bus call.
+            with contextlib.suppress(Exception):
+                self._bus.call_sync(
+                    PORTAL_BUS,
+                    request_path,
+                    IFACE_REQUEST,
+                    "Close",
+                    None,
+                    None,
+                    Gio.DBusCallFlags.NONE,
+                    1000,
+                    None,
+                )
+            if self._cancelled.is_set():
+                raise PortalError("capture startup cancelled") from exc
+            raise
         finally:
             self._bus.signal_unsubscribe(sub_id)
 
@@ -176,17 +219,19 @@ class PortalSession:
         VIRTUAL is not supported by this portal.
         """
         GLib = self._GLib
+        self._check_cancelled()
 
         session_token = self._next_token("ubudesksess")
+        # Keep the predicted handle even if CreateSession is cancelled before
+        # its response arrives, so stop() can close a remotely-created session.
+        self.session_handle = f"{PORTAL_PATH}/session/{self._sender_path}/{session_token}"
         results = self._call_with_response(
             IFACE_REMOTEDESKTOP,
             "CreateSession",
             [],
             {"session_handle_token": GLib.Variant("s", session_token)},
         )
-        self.session_handle = results.get("session_handle") or (
-            f"{PORTAL_PATH}/session/{self._sender_path}/{session_token}"
-        )
+        self.session_handle = results.get("session_handle") or self.session_handle
         log.info("portal session created: %s", self.session_handle)
 
         if on_closed is not None:
@@ -276,10 +321,12 @@ class PortalSession:
                 None,
                 self._Gio.DBusCallFlags.NONE,
                 5000,
-                None,
+                self._cancellable,
             )
+            self._check_cancelled()
             return int(variant.unpack()[0])
         except Exception as exc:  # noqa: BLE001
+            self._check_cancelled()
             log.warning("could not read AvailableSourceTypes: %s", exc)
             return 0
 
@@ -296,7 +343,7 @@ class PortalSession:
             Gio.DBusCallFlags.NONE,
             10000,
             None,
-            None,
+            self._cancellable,
         )
         fd_index = result.unpack()[0]
         fd = fd_list.get(fd_index)
@@ -396,7 +443,6 @@ class PortalSession:
         finally:
             self.session_handle = None
             if self.pipewire_fd >= 0:
-                import contextlib
                 import os
 
                 with contextlib.suppress(OSError):

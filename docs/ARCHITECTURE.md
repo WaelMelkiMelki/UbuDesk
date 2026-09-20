@@ -19,7 +19,7 @@
 └──────────────────────────────────────────────┘
 ```
 
-## Server (Python 3.11+)
+## Server (Python 3.10+)
 
 ### Package layout
 
@@ -27,12 +27,12 @@
 |---|---|
 | `protocol.py` | framing + JSON codec, Annex-B helpers; mirrored by Kotlin `Protocol.kt` |
 | `net/server.py` | asyncio TCP/TLS accept loop, wiring config → source factory |
-| `net/session.py` | per-client state machine `HELLO → AUTH → READY → STREAMING` |
+| `net/session.py` | per-client state machine `HELLO → AUTH → READY → STARTING → STREAMING → CLOSED` |
 | `net/auth.py` | PIN manager (single use / expiry / lockout), hashed token store |
 | `net/tls.py` | self-signed EC P-256 cert, SHA-256 fingerprint |
 | `net/discovery.py` | zeroconf advertising of `_ubudesk._tcp` |
 | `net/usb.py` | `adb reverse` helper |
-| `capture/base.py` | `VideoSource` interface (`start/stop/request_keyframe/set_bitrate`) |
+| `capture/base.py` | `VideoSource` interface (`start/cancel_start/stop/request_keyframe/set_bitrate`) |
 | `capture/test_source.py` | headless H.264 test pattern (PyAV/libx264) — the CI path |
 | `capture/portal_session.py` | xdg-desktop-portal RemoteDesktop+ScreenCast session |
 | `capture/pipeline.py` | GStreamer `pipewiresrc → encoder → appsink` |
@@ -51,7 +51,18 @@
   `on_frame(...)`, which hops onto the loop with `loop.call_soon_threadsafe`.
 - Portal D-Bus calls happen in a worker thread (`run_in_executor`) because the
   permission dialog can block for minutes; that thread pumps the default GLib
-  main context while waiting for `Request.Response` signals.
+  main context while waiting for `Request.Response` signals. A separate
+  startup task awaits the worker, leaving the socket reader free to answer pings.
+  Cancellation signals the worker (`Gio.Cancellable` and `Request.Close` for
+  portals); it never tears down a source concurrently with `start()`. Workers
+  that cannot stop immediately retain ownership and dispose their late results.
+  `CLOSED` is terminal. Each stream's callbacks carry a generation so frames
+  from a replaced source cannot enter the new stream.
+- Capture and input cleanup run off the event loop. Held touches, keys, and
+  mouse buttons are released before closing input and the capture/portal.
+- Device-store operations reload under a process-safe sidecar file lock. Each
+  authenticated session keeps only its token hash and checks the registry once
+  per second, so CLI revocation also terminates an already-open connection.
 - A small dedicated GLib `MainLoop` thread watches the GStreamer bus.
 
 ### Backpressure (the latency guarantee)
@@ -126,9 +137,9 @@ client the true encoded dimensions. Both sizes are logged.
   sandboxes often lack GI/GStreamer; PyAV ships libx264 in its wheel, so the
   *entire protocol + session + backpressure stack* is testable headless. The
   GStreamer path shares everything above `VideoSource`.
-- **`keepalive-time=100` on pipewiresrc**: PipeWire screen casts emit frames
-  only on damage. Without keepalive a static desktop starves the client and
-  trips the 6 s idle timeout.
+- **`keepalive-time=100` on pipewiresrc**: PipeWire screen casts can emit
+  frames only on damage; keepalive keeps the encoder fed on a static desktop.
+  Connection liveness is checked by ping/pong independently of video delivery.
 - **Encoder properties by introspection** (`encoders.apply_properties`):
   VA/NVENC property names drift between GStreamer versions; we set a property
   only if the element exposes it and log what was applied.
@@ -142,7 +153,10 @@ client the true encoded dimensions. Both sizes are logged.
   `SurfaceView` inside `AndroidView` (a `TextureView` adds a copy and ~1 frame
   of latency).
 - `UbuDeskClient`: dedicated reader **thread** (hot path), writer coroutine
-  fed by a channel, ping every 2 s, 6 s silence ⇒ disconnect.
+  fed by a channel. Pairing allows 120 s with no heartbeats; only after
+  `auth_ok` do pings run every 2 s with a 6 s idle timeout. EOF/error/cancellation
+  share an idempotent socket cleanup path. The ViewModel ignores superseded
+  connection callbacks and serializes control events on its main-thread scope.
 - `VideoDecoder`: `MediaCodec` on its own `HandlerThread`,
   `KEY_LOW_LATENCY` (API 30+) + `KEY_PRIORITY=0` + `KEY_OPERATING_RATE`,
   render with `releaseOutputBuffer(i, true)` immediately. A

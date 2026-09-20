@@ -29,7 +29,7 @@ class UbuDeskServer:
         self._server: asyncio.Server | None = None
         self._advertiser: Advertiser | None = None
         self._sessions: set[Session] = set()
-        self._session_lock = asyncio.Lock()
+        self._stopping = False
         self.fingerprint = ""
         self._source_factory = source_factory or SourceFactory(self._default_factory)
 
@@ -154,6 +154,11 @@ class UbuDeskServer:
         return None
 
     async def _on_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._stopping:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
         sock = writer.get_extra_info("socket")
         if sock is not None:
             with contextlib.suppress(OSError):
@@ -175,13 +180,13 @@ class UbuDeskServer:
             self._sessions.discard(session)
 
     async def stop(self) -> None:
-        if self._advertiser is not None:
-            self._advertiser.stop()
-        for session in list(self._sessions):
-            await session.close()
+        self._stopping = True
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
+        if self._advertiser is not None:
+            self._advertiser.stop()
+        await asyncio.gather(*(session.close() for session in list(self._sessions)))
         log.info("server stopped")
 
     async def serve_forever(self) -> None:

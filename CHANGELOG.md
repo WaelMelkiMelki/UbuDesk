@@ -2,6 +2,31 @@
 
 ## Unreleased (v0.1.0 in progress)
 
+### CI and debug hardware-test builds
+- Install server/Android workflows with push, pull-request, and manual triggers;
+  pin the server matrix to Python 3.10/3.12 and provision Android SDK 36 / Java 17.
+- Run Android JVM tests and lint before uploading a signature-verified debug APK,
+  matching source archive, SHA-256 checksums, and device-test instructions.
+- Preserve test reports, check workflow-copy drift, and decode the CLI smoke-test
+  video. Release publication stays a separate, disabled-by-default opt-in.
+
+### Stabilization — pairing, revocation, and capture lifecycle
+- Separate 120-second PIN-entry deadline from the six-second streaming idle
+  timeout; Android starts heartbeats only after authentication succeeds.
+- Device-store transactions reload under a file lock; CLI revocation can no
+  longer be undone by cached last-seen writes. Active sessions recheck their
+  token hash every second and close on revocation/re-pairing.
+- Non-blocking capture startup, cooperative portal-request cancellation,
+  cleanup of failed/late starts, terminal CLOSED state, and stream-generation
+  isolation. Held touches/keys/mouse buttons are released before teardown.
+- Portal request argument construction and unique handle fixes; monitor cleanup
+  still runs when native pipeline/GLib shutdown raises an error.
+- Android transport errors/cancellation close sockets once (including an
+  unfinished TLS handshake); superseded connection callbacks are ignored.
+- Regression coverage for lifecycle/security, cross-process CLI revocation,
+  fake-GI portal requests, and Android loopback socket behavior. Real desktop
+  capture and Android device validation are still required before release.
+
 ### M0 — Scaffold
 - Monorepo layout (server / android / protocol / docs / tools).
 - Wire protocol v1 spec (`docs/PROTOCOL.md`) and golden vectors shared by the

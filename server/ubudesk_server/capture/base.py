@@ -50,6 +50,14 @@ class VideoSource(ABC):
     def start(self, settings: StreamSettings, on_frame: OnFrame) -> StreamInfo:
         """Start producing frames. Blocking; may take a moment (portal dialog)."""
 
+    def cancel_start(self) -> None:  # noqa: B027
+        """Thread-safe, non-blocking cancellation signal for an in-flight start.
+
+        Backends with permission dialogs should override this. The session
+        always calls stop() AFTER start() returns, including cancelled/failed
+        starts; cancel_start() must not tear resources down concurrently.
+        """
+
     @abstractmethod
     def stop(self) -> None:
         """Stop and release everything (idempotent)."""

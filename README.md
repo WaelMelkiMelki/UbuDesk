@@ -10,9 +10,11 @@ back to the desktop.
 - **Security:** PIN pairing, TLS with trust-on-first-use certificate pinning,
   hashed tokens. LAN/USB only — no cloud, no telemetry.
 
-> Status: v0.1 development. The protocol, auth, and the headless streaming
-> pipeline are covered by CI; desktop capture and real-device behavior are
-> tracked honestly in [docs/MANUAL_TEST.md](docs/MANUAL_TEST.md).
+> Status: v0.1 development, **not a stable release**. Automated tests cover the
+> protocol, authentication, capture lifecycle, and headless streaming pipeline.
+> [CI workflows](#ci-note) run these checks when this branch is pushed to GitHub.
+> Desktop capture and real-device behavior still require the checks in
+> [docs/QUICK_TEST.md](docs/QUICK_TEST.md) and [docs/MANUAL_TEST.md](docs/MANUAL_TEST.md).
 
 ## Quick start
 
@@ -117,14 +119,23 @@ same files.
 
 ### CI note
 
-GitHub Actions workflows live in `ci/workflows/`. The automation account
-that created this branch cannot push `.github/workflows/` (missing
-`workflows` permission), so enable them once with:
+The server and Android test/build workflows are installed under
+`.github/workflows/`. They run on relevant pushes and pull requests, and can
+also be started with **Run workflow** once present on the default branch.
+Changes on a working branch must be pushed before GitHub can run them.
 
-```bash
-./scripts/enable-ci.sh
-git add .github/workflows && git commit -m "ci: enable workflows" && git push
-```
+- Server: Python 3.10 on Ubuntu 22.04 and Python 3.12 on Ubuntu 24.04, lint,
+  type checks, tests, golden vectors, and a decoded-video CLI smoke test.
+- Android: Java 17 / SDK 36, JVM tests, lint, and a signed **debug** APK.
+  A successful run uploads `ubudesk-debug-<commit>` with the APK, matching
+  source archive, checksums, and [first-device-test instructions](docs/QUICK_TEST.md).
+  This is a test build, **not a production release**.
+
+The maintained definitions remain in `ci/workflows/`; after editing them,
+run `./scripts/enable-ci.sh` to refresh the installed copies. CI checks for
+drift with `./scripts/enable-ci.sh --check`. The tag-triggered release publisher
+is **not enabled** by default (`--include-release` is a separate opt-in).
+
 
 ## Support matrix (honest)
 
@@ -149,8 +160,9 @@ of the ladder applies. Mirror always works.
 ² The portal must advertise VIRTUAL source types; GNOME ≥ 42 on Wayland
 does, most others don't (yet). Mirror always works.
 
-The headless CI (protocol, auth, TLS, encode pipeline with test source) runs
-on **ubuntu-22.04 and ubuntu-24.04** — that part is verified continuously.
+The headless CI definition (protocol, auth, TLS, encode pipeline with test
+source) targets **ubuntu-22.04 and ubuntu-24.04**.
+A passing headless run is not proof of desktop capture or Android device behavior.
 Per-feature hardware status is tracked in
 [docs/MANUAL_TEST.md](docs/MANUAL_TEST.md); the table above will be updated
 as real machines confirm each row.

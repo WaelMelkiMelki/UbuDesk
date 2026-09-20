@@ -175,3 +175,60 @@ async def test_clean_shutdown_releases_port():
 async def test_state_dir_isolated(tmp_path):
     # sanity: the autouse fixture isolates state
     assert "state" in str(state_dir())
+
+
+@pytest.mark.parametrize("tls", [False, True])
+async def test_cli_revocation_closes_active_stream_and_refuses_reconnect(tls, monkeypatch):
+    from ubudesk_server.net import session as session_module
+
+    monkeypatch.setattr(session_module, "AUTHORIZATION_CHECK_INTERVAL_S", 0.05)
+    server = await _start_server(tls=tls)
+    client = tc.Client("127.0.0.1", server.config.port, use_tls=tls, fingerprint=server.fingerprint)
+    try:
+        await client.connect()
+        await client.handshake(pin=server.pins.issue(), token=None)
+        token = client.token
+        await client.start_stream(320, 200, 30, "mirror")
+        # Use the real CLI in another process, not the server's DeviceStore.
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "ubudesk_server",
+            "devices",
+            "--revoke",
+            client.client_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), 5)
+        assert proc.returncode == 0, stderr.decode()
+        assert "revoked" in stdout.decode()
+
+        async def until_closed():
+            revoked = False
+            while True:
+                try:
+                    kind, payload = await client.read_frame()
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    return revoked
+                if kind == tc.TYPE_CONTROL:
+                    import json
+
+                    msg = json.loads(payload)
+                    revoked |= msg.get("code") == "revoked"
+
+        assert await asyncio.wait_for(until_closed(), 2)
+        reconnect = tc.Client(
+            "127.0.0.1", server.config.port, use_tls=tls, fingerprint=server.fingerprint
+        )
+        reconnect.client_id = client.client_id
+        try:
+            await reconnect.connect()
+            with pytest.raises(RuntimeError, match="unknown_token"):
+                await reconnect.handshake(pin=None, token=token)
+        finally:
+            await reconnect.close()
+        assert len(server.devices) == 0  # auth must not restore the deleted entry
+    finally:
+        await client.close()
+        await server.stop()

@@ -56,11 +56,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _stats = MutableStateFlow("")
     val stats: StateFlow<String> = _stats
 
-    var client: UbuDeskClient? = null
+    @Volatile var client: UbuDeskClient? = null
         private set
 
     /** Callbacks the stream screen wires up. */
-    var onVideoFrame: ((Protocol.Video) -> Unit)? = null
+    @Volatile var onVideoFrame: ((Protocol.Video) -> Unit)? = null
+    @Volatile private var connectionGeneration = 0L
 
     private var pendingServer: KnownServer? = null
     private var pendingPin: String? = null
@@ -92,6 +93,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopDiscovery() = discovery.stop()
 
     fun connectTo(server: KnownServer, pin: String? = null) {
+        val generation = ++connectionGeneration
+        val previous = client
+        client = null
+        previous?.disconnect("replaced by a new connection")
         pendingServer = server
         pendingPin = pin
         capturedFingerprint = null
@@ -103,7 +108,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             port = server.port,
             useTls = useTls,
             pinnedFingerprint = server.fingerprint,
-            listener = listener,
+            listener = listenerFor(generation),
         )
         client = c
         c.connect()
@@ -126,9 +131,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnect() {
-        client?.disconnect()
+        connectionGeneration++
+        val previous = client
         client = null
         _state.value = UiState.Connect
+        previous?.disconnect()
     }
 
     fun requestIdr() {
@@ -146,6 +153,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun forgetServer(key: String) {
         viewModelScope.launch { storage.removeServer(key) }
+    }
+
+    // Transport callbacks can race with Cancel/Reconnect. Serialize control
+    // events on the UI thread and ignore callbacks from superseded connections.
+    private fun onConnectionEvent(generation: Long, action: () -> Unit) {
+        viewModelScope.launch {
+            if (generation == connectionGeneration) action()
+        }
+    }
+
+    private fun listenerFor(generation: Long) = object : UbuDeskClient.Listener {
+        override fun onFingerprintCaptured(fingerprintHex: String) =
+            onConnectionEvent(generation) { listener.onFingerprintCaptured(fingerprintHex) }
+
+        override fun onAuthRequired(serverName: String, methods: List<String>) =
+            onConnectionEvent(generation) { listener.onAuthRequired(serverName, methods) }
+
+        override fun onAuthOk(newToken: String?) =
+            onConnectionEvent(generation) { listener.onAuthOk(newToken) }
+
+        override fun onAuthFail(reason: String, retryAfterS: Int) =
+            onConnectionEvent(generation) { listener.onAuthFail(reason, retryAfterS) }
+
+        override fun onStarted(width: Int, height: Int, fps: Int, encoder: String) =
+            onConnectionEvent(generation) { listener.onStarted(width, height, fps, encoder) }
+
+        override fun onVideo(frame: Protocol.Video) {
+            if (generation == connectionGeneration) onVideoFrame?.invoke(frame)
+        }
+
+        override fun onServerError(code: String, message: String) =
+            onConnectionEvent(generation) { listener.onServerError(code, message) }
+
+        override fun onDisconnected(reason: String) =
+            onConnectionEvent(generation) { listener.onDisconnected(reason) }
     }
 
     private val listener = object : UbuDeskClient.Listener {
@@ -213,7 +255,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         override fun onServerError(code: String, message: String) {
+            if (code == "revoked") {
+                pendingServer?.copy(token = null)?.let { cleared ->
+                    pendingServer = cleared
+                    viewModelScope.launch { storage.upsertServer(cleared) }
+                }
+            }
             val hint = when (code) {
+                "revoked" -> "Pairing was revoked on the PC. Reconnect with a new pairing PIN."
                 "no_virtual_monitor" ->
                     "This PC's desktop portal doesn't support virtual monitors. " +
                         "Switch mode to 'mirror' in Settings, or see docs/TROUBLESHOOTING.md."
@@ -222,6 +271,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 else -> "$code: $message"
             }
             _state.value = UiState.Failed(hint)
+            client?.disconnect("server error: $code")
         }
 
         override fun onDisconnected(reason: String) {
@@ -233,7 +283,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        connectionGeneration++
         discovery.stop()
         client?.disconnect()
+        client = null
     }
 }
