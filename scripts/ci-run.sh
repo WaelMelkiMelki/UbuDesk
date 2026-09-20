@@ -19,7 +19,10 @@ import sys
 from pathlib import Path
 
 lines = Path(sys.argv[1]).read_text(errors="replace").splitlines()
-errors = [line for line in lines if re.search(r"(^e: |error:|Error:|Exception|^> )", line)]
+errors = [
+    line for line in lines
+    if re.search(r"(^e: |error:|Error:|Exception|FAIL(?:ED|URE)|^> (?!Task |Configure project ))", line)
+]
 details = errors[:30] + ["--- log tail ---"] + lines[-15:]
 message = f"CI command exited with status {sys.argv[2]}:\n" + "\n".join(details)
 message = message[:14000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
